@@ -1,0 +1,11 @@
+{
+    "game_directory": "E:/NEW_PROJECTS/minecraft-ilya/test-mine",
+    "minecraft_version": "1.21.1",
+    "neoforge_version": "21.1.233",
+    "ram_mb": 10000,
+    "close_after_launch": false,
+    "username": "123",
+    "server_name": "123",
+    "auto_check_updates": true,
+    "java_path": ""
+}
