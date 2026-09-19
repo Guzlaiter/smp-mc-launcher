@@ -1,8 +1,9 @@
 import hashlib
 import logging
 from pathlib import Path
+from mcstatus import JavaServer
 
-from app.config import LOGS_DIR
+from app.config import LOGS_DIR, IP_SERVER
 
 LOG_PATH = LOGS_DIR / "launcher.log"
 
@@ -47,3 +48,15 @@ def safe_join(base: Path, rel: str) -> Path:
     if base_r not in target.parents and target != base_r:
         raise ValueError(f"Недопустимый путь: {rel}")
     return target
+
+def get_stat():
+    server = JavaServer.lookup(IP_SERVER)
+
+    status = server.status()
+
+    SERVER_STATS = [
+        ("Игроки:", f"{status.players.online:,} / {status.players.max:,}"),
+        ("Пинг:",   f"{round(status.latency)}мс"),
+        ("Статус:", f"{ 'Онлайн' if status.latency > 0 else 'Недоступен' }"),
+    ]
+    return SERVER_STATS

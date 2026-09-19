@@ -1,35 +1,21 @@
 import sys
-import tkinter as tk
-from tkinter import ttk, messagebox
+from tkinter import messagebox
 
 from app.config import load_config
 from app.utils import log
 from ui.main_window import MainWindow
+from ui.widgets import CustomWindow
 
 
-class LauncherApp(tk.Tk):
+class LauncherApp(CustomWindow):
     def __init__(self):
-        super().__init__()
-        self.cfg = load_config()
-
-        self.title(f"{self.cfg.get('server_name', 'MY SERVER')} — Launcher")
-        self.geometry("480x620")
-        self.resizable(False, False)
-
-        try:
-            ttk.Style().theme_use("vista")
-        except Exception:
-            pass
-
-        container = ttk.Frame(self)
-        container.pack(fill="both", expand=True)
-        MainWindow(container, self.cfg)
+        super().__init__(title="Create SMP — Launcher")
+        MainWindow(self, load_config())
 
 
 def main():
     try:
-        app = LauncherApp()
-        app.mainloop()
+        LauncherApp().mainloop()
     except Exception as e:
         log.exception("fatal")
         try:

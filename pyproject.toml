@@ -5,6 +5,13 @@ description = "Add your description here"
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
+    "mcstatus>=14.2.0",
     "minecraft-launcher-lib>=8.0",
+    "pillow>=12.3.0",
     "requests>=2.34.2",
+]
+
+[dependency-groups]
+dev = [
+    "pyinstaller>=6.22.3",
 ]

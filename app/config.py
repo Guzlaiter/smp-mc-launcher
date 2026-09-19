@@ -7,6 +7,7 @@ DATA_DIR = ROOT / "data"
 LOGS_DIR = ROOT / "logs"
 DATA_DIR.mkdir(exist_ok=True)
 LOGS_DIR.mkdir(exist_ok=True)
+IP_SERVER = "createlandsmp.play.ski:25565"  # ← вписать свой IP сервера
 
 CONFIG_PATH = DATA_DIR / "config.json"
 

@@ -1,0 +1,1 @@
+uv run pyinstaller --onefile --windowed --add-data "assets;assets" --icon "assets/icon.ico" --name Launcher main.py

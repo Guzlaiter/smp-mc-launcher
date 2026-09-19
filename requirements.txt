@@ -1,2 +1,3 @@
 requests>=2.31
 minecraft-launcher-lib>=8.0
+pillow>=10.0
