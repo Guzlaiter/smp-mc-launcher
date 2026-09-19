@@ -13,3 +13,4 @@ logs/*
 test_release/
 test_release/*
 *.mrpack
+*.spec

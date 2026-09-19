@@ -7,13 +7,15 @@
 """
 from __future__ import annotations
 
+import shutil
 import threading
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable
 
-from app.config import GITHUB_REPO, TEST_RELEASE_DIR, is_test_mode, save_config
-from app.github_updater import GithubUpdater, LocalUpdater, UpdateError
+from app.config import GITHUB_BRANCH, GITHUB_REPO, TEST_RELEASE_DIR, is_test_mode, save_config
+from app.github_updater import GithubUpdater, LocalUpdater, UpdateError, install_pack
 from app.minecraft import (
     MinecraftError,
     build_launch_command,
@@ -22,7 +24,13 @@ from app.minecraft import (
     installed_version_ids,
     launch_minecraft,
 )
-from app.utils import human_size, log
+from app.diagnostics import check_hosts, format_report, summarize
+from app.utils import describe_error, human_size, log
+
+
+def _short(tag: str) -> str:
+    """Хэш коммита показываем как 7 символов; обычные версии («v1.2») — как есть."""
+    return tag[:7] if len(tag) == 40 and all(c in "0123456789abcdef" for c in tag) else tag
 
 
 @dataclass
@@ -34,19 +42,23 @@ class UiBridge:
     busy: Callable[[bool], None]                 # идёт ли операция
     confirm: Callable[[str, str], bool]          # диалог да/нет
     quit: Callable[[], None]                     # закрыть лаунчер
+    report: Callable[[str, str], None] = lambda title, text: None   # показать окно с отчётом
 
 
 class LauncherController:
     def __init__(self, cfg: dict, ui: UiBridge):
         self.cfg = cfg
         self.ui = ui
-        self._lock = threading.Lock()
+        self._lock = threading.Lock()          # «тяжёлая» операция: установка сборки / запуск игры
+        self._check_lock = threading.Lock()    # проверка обновлений (PLAY не блокирует)
+        self._diag_lock = threading.Lock()     # диагностика сети
 
         self.test_mode = is_test_mode()
         if self.test_mode:
             self.updater = LocalUpdater(TEST_RELEASE_DIR)
         else:
-            self.updater = GithubUpdater(GITHUB_REPO) if "/" in GITHUB_REPO else None
+            configured = "/" in GITHUB_REPO and GITHUB_REPO != "owner/repo"
+            self.updater = GithubUpdater(GITHUB_REPO, GITHUB_BRANCH) if configured else None
 
     # ==================================================================
     #                           Публичное API
@@ -59,35 +71,80 @@ class LauncherController:
         return f"NeoForge | MC {self.cfg.get('minecraft_version', '?')}"
 
     def check_updates(self) -> None:
+        """Проверка обновлений. Идёт в фоне и НЕ блокирует кнопку PLAY."""
         if not self.updater:
-            self._status("Источник сборки не настроен", "error")
+            self._status("Источник сборки не настроен: укажите GITHUB_REPO в app/config.py", "error")
             return
-        self._start(self._check_job)
+        if not self._check_lock.acquire(blocking=False):
+            self._status("Проверка уже идёт", "warn")
+            return
+        threading.Thread(target=self._check_thread, daemon=True).start()
 
     def play(self) -> None:
-        self._start(self._play_job)
+        threading.Thread(target=self._play_thread, daemon=True).start()
 
-    # ==================================================================
-    #                    Запуск задач / общение с UI
-    # ==================================================================
-    def _start(self, job: Callable[[], None]) -> None:
-        if not self._lock.acquire(blocking=False):
-            self._status("Дождитесь завершения текущей операции", "warn")
+    def diagnose(self) -> None:
+        """Проверяет доступность GitHub / Modrinth / Mojang / NeoForge. Не блокирует PLAY."""
+        if not self._diag_lock.acquire(blocking=False):
+            self._status("Диагностика уже идёт", "warn")
             return
-        self._ui(lambda: self.ui.busy(True))
-        self._progress(0, "")
+        threading.Thread(target=self._diag_thread, daemon=True).start()
 
-        def runner():
-            try:
-                job()
-            except Exception as e:  # страховка: поток не должен умирать молча
-                log.exception("job failed")
-                self._status(f"Ошибка: {e}", "error")
-            finally:
+    # ==================================================================
+    #                    Потоки / общение с UI
+    # ==================================================================
+    @contextmanager
+    def _exclusive(self):
+        """Одновременно — только одна тяжёлая операция; на её время UI получает busy=True."""
+        got = self._lock.acquire(blocking=False)
+        if got:
+            self._ui(lambda: self.ui.busy(True))
+            self._progress(0, "")
+        try:
+            yield got
+        finally:
+            if got:
                 self._lock.release()
                 self._ui(lambda: self.ui.busy(False))
 
-        threading.Thread(target=runner, daemon=True).start()
+    def _check_thread(self) -> None:
+        try:
+            self._check_job()
+        except UpdateError as e:
+            self._status_bg(str(e), "error")
+        except Exception as e:
+            log.exception("check failed")
+            self._status_bg(f"Проверка обновлений: {describe_error(e)}", "error")
+        finally:
+            self._check_lock.release()
+
+    def _diag_thread(self) -> None:
+        try:
+            self._status_bg("Диагностика сети...")
+            results = check_hosts()
+            text = format_report(results)
+            log.info("Диагностика сети:\n" + text)
+            self._status(*summarize(results))
+            self._ui(lambda: self.ui.report("Диагностика сети", text))
+        except Exception as e:
+            log.exception("diagnose failed")
+            self._status(f"Диагностика: {describe_error(e)}", "error")
+        finally:
+            self._diag_lock.release()
+
+    def _play_thread(self) -> None:
+        with self._exclusive() as ok:
+            if not ok:
+                self._status("Дождитесь завершения текущей операции", "warn")
+                return
+            self._play_job()
+
+    def _status_bg(self, text: str, level: str = "info") -> None:
+        """Статус от фоновой проверки: не перебивает сообщения идущей установки/запуска."""
+        if self._lock.locked():
+            log.info(f"(фон) {text}")
+        else:
+            self._status(text, level)
 
     def _ui(self, fn: Callable[[], None]) -> None:
         try:
@@ -119,89 +176,96 @@ class LauncherController:
     #                           Обновления
     # ==================================================================
     def _check_job(self) -> None:
-        try:
-            self._status("Проверка источника...")
-            release = None
-            if self.test_mode:
-                tag = self.updater.get_local_version()
-            else:
-                release = self.updater.get_latest_release()
-                tag = release.get("tag_name", "?")
+        source = "test_release" if self.test_mode else "GitHub"
+        self._status_bg(f"Проверка обновлений ({source})...")
 
-            if self._read_local_version() == tag:
-                self._status(f"Сборка актуальна ({tag})", "ok")
+        tag = self.updater.latest_version()
+        shown = _short(tag)
+
+        if self._read_local_version() == tag:
+            self._status_bg(f"Сборка актуальна ({shown})", "ok")
+            return
+
+        self._status_bg(f"Доступна версия {shown}", "warn")
+        if not self._confirm("Обновление",
+                             f"Доступна новая версия сборки {shown}.\nОбновить сейчас?"):
+            return
+
+        with self._exclusive() as ok:
+            if not ok:
+                self._status("Обновление отложено: идёт запуск игры", "warn")
                 return
+            try:
+                self._update_job(tag)
+            except UpdateError as e:
+                self._status(str(e), "error")
+            except Exception as e:
+                log.exception("update failed")
+                self._status(f"Ошибка обновления: {describe_error(e)}", "error")
 
-            self._status(f"Доступна версия {tag}", "warn")
-            if self._confirm("Обновление",
-                             f"Доступна новая версия сборки {tag}.\nОбновить сейчас?"):
-                self._update_job(tag, release)
-        except UpdateError as e:
-            self._status(str(e), "error")
-        except Exception as e:
-            log.exception("check failed")
-            self._status(f"Ошибка: {e}", "error")
-
-    def _update_job(self, tag: str, release: dict | None) -> None:
+    def _update_job(self, tag: str) -> None:
         game_dir = Path(self.cfg["game_directory"])
         client_dir = game_dir / "client"
-        tmp_dir = game_dir / "tmp"
-        tmp_dir.mkdir(parents=True, exist_ok=True)
-
-        try:
-            asset = None
-            if self.test_mode:
-                mrpack_name = next(self.updater.dir.glob("*.mrpack")).name
-            else:
-                asset = self.updater.find_mrpack_asset(release)
-                mrpack_name = asset["name"]
-        except Exception as e:
-            log.exception("get mrpack name failed")
-            self._status(f"Ошибка: {e}", "error")
-            return
-
-        mrpack_path = tmp_dir / mrpack_name
+        work_dir = game_dir / "tmp"
 
         def dl_cb(done, total):
-            pct = int(done / total * 100) if total else 0
-            self._progress(pct, f"{mrpack_name}  {human_size(done)} / {human_size(total)}")
-
-        try:
-            if self.test_mode:
-                self._status(f"Копирование {mrpack_name}...")
-                self.updater.copy_asset(mrpack_path, progress_cb=dl_cb)
-            else:
-                self._status(f"Скачивание {mrpack_name}...")
-                self.updater.download_asset(asset, mrpack_path, progress_cb=dl_cb)
-        except Exception as e:
-            log.exception("get mrpack failed")
-            self._status(f"Ошибка получения сборки: {e}", "error")
-            return
+            if total:
+                self._progress(int(done / total * 100),
+                               f"Скачивание  {human_size(done)} / {human_size(total)}")
+            else:  # codeload не сообщает размер архива заранее
+                self._progress(0, f"Скачивание  {human_size(done)}")
 
         def up_cb(stage, idx, total, msg):
             pct = int(idx / total * 100) if total else 0
             self._progress(pct, f"{msg}  ({idx}/{total})")
 
         try:
-            self._status("Установка сборки...")
-            info = self.updater.install_mrpack(mrpack_path, client_dir, progress_cb=up_cb)
+            self._status("Загрузка сборки из test_release..." if self.test_mode
+                         else "Скачивание сборки с GitHub...")
+            root = self.updater.fetch(work_dir, progress_cb=dl_cb)
         except Exception as e:
-            log.exception("install mrpack failed")
-            self._status(f"Ошибка установки: {e}", "error")
+            log.exception("fetch pack failed")
+            self._status(str(e) if isinstance(e, UpdateError)
+                         else f"Ошибка получения сборки: {describe_error(e)}", "error")
+            return
+
+        try:
+            self._status("Установка сборки...")
+            info = install_pack(root, client_dir, up_cb)
+        except Exception as e:
+            log.exception("install pack failed")
+            self._status(str(e) if isinstance(e, UpdateError)
+                         else f"Ошибка установки: {describe_error(e)}", "error")
+            return
+        finally:
+            if not self.test_mode:  # скачанную копию репозитория не храним (test_release не трогаем!)
+                shutil.rmtree(work_dir / "repo", ignore_errors=True)
+
+        # Версии из сборки: mrpack задаёт обе всегда, pack.json — только то, что указал
+        if info.get("minecraft"):
+            self.cfg["minecraft_version"] = info["minecraft"]
+        if "neoforge" in info:
+            self.cfg["neoforge_version"] = info["neoforge"] or ""
+        save_config(self.cfg)
+
+        failed = int(info.get("failed", 0))
+        if failed:
+            # Часть файлов не скачалась (сеть): версию НЕ записываем, чтобы при следующей
+            # проверке лаунчер предложил докачать. Уже скачанные файлы пропустятся по хэшу.
+            log.error(f"Сборка {tag} установлена не полностью: не скачано {failed} файлов")
+            self._status(f"Не скачано файлов: {failed}. Проверьте сеть (Настройки → Диагностика) "
+                         f"и повторите обновление", "error")
             return
 
         self._write_local_version(tag)
-        self.cfg["minecraft_version"] = info.get("minecraft") or self.cfg["minecraft_version"]
-        self.cfg["neoforge_version"] = info.get("neoforge") or ""
-        save_config(self.cfg)
-
-        self._status(f"Готово ({tag})", "ok")
+        self._status(f"Готово ({_short(tag)})", "ok")
         self._progress(100, "Готово")
 
     # ==================================================================
     #                              Игра
     # ==================================================================
     def _play_job(self) -> None:
+        stage = "Подготовка"
         try:
             self._status("Подготовка...")
             game_dir = Path(self.cfg["game_directory"])
@@ -216,16 +280,19 @@ class LauncherController:
             installed = installed_version_ids(mc_dir)
 
             if mc_version not in installed:
+                stage = "Установка Minecraft"
                 self._status("Установка Minecraft...")
                 install_minecraft(mc_dir, mc_version, java_path, self._mc_progress)
 
             if nf_version:
                 has_nf = any("neoforge" in v.lower() and nf_version in v for v in installed)
                 if not has_nf:
+                    stage = "Установка NeoForge"
                     self._status("Установка NeoForge...")
                     install_neoforge(mc_dir, mc_version, nf_version,
                                      java_path, self._mc_progress)
 
+            stage = "Запуск Minecraft"
             self._status("Запуск Minecraft...")
             cmd = build_launch_command(
                 mc_dir=mc_dir,
@@ -237,16 +304,16 @@ class LauncherController:
                 ram_mb=int(self.cfg.get("ram_mb", 4096)),
                 java_path=java_path,
             )
-            launch_minecraft(cmd, cwd=client_dir)
+            launch_minecraft(cmd, client_dir=client_dir)
             self._status("Minecraft запущен", "ok")
 
             if self.cfg.get("close_after_launch"):
                 self._ui(self.ui.quit)
         except MinecraftError as e:
-            self._status(f"Ошибка: {e}", "error")
+            self._status(f"{stage}: {e}", "error")
         except Exception as e:
-            log.exception("play error")
-            self._status(f"Ошибка: {e}", "error")
+            log.exception(f"play error ({stage})")
+            self._status(f"{stage}: {describe_error(e)}", "error")
 
     def _mc_progress(self, status: str, current: int, total: int) -> None:
         pct = int(current / total * 100) if total else 0

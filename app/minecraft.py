@@ -11,7 +11,7 @@ from pathlib import Path
 import minecraft_launcher_lib
 from minecraft_launcher_lib.types import CallbackDict
 
-from app.utils import log
+from app.utils import describe_error, log
 
 
 class MinecraftError(Exception):
@@ -94,7 +94,7 @@ def install_minecraft(mc_dir: Path, mc_version: str,
         )
     except Exception as e:
         log.exception("install_minecraft failed")
-        raise MinecraftError(f"Не удалось установить Minecraft: {e}")
+        raise MinecraftError(f"Не удалось установить Minecraft: {describe_error(e)}")
     log.info(f"Minecraft {mc_version} установлен")
 
 
@@ -113,7 +113,7 @@ def install_neoforge(mc_dir: Path, mc_version: str, nf_version: str,
         )
     except Exception as e:
         log.exception("install_neoforge failed")
-        raise MinecraftError(f"Не удалось установить NeoForge: {e}")
+        raise MinecraftError(f"Не удалось установить NeoForge: {describe_error(e)}")
     log.info(f"NeoForge {nf_version} установлен")
 
 
@@ -155,22 +155,49 @@ def build_launch_command(
     ram_mb: int,
     java_path: str = "",
 ) -> list[str]:
+
     if nf_version:
         version_id = _neoforge_version_id(mc_dir, nf_version)
         if not version_id:
-            raise MinecraftError(f"NeoForge {nf_version} не найден в {mc_dir / 'versions'}")
+            raise MinecraftError(
+                f"NeoForge {nf_version} не найден в {mc_dir / 'versions'}"
+            )
     else:
         version_id = mc_version
+
+    jvm_args = [
+        # G1GC
+        "-XX:+UseG1GC",
+        "-XX:+ParallelRefProcEnabled",
+        "-XX:MaxGCPauseMillis=200",
+        "-XX:+UnlockExperimentalVMOptions",
+        "-XX:+DisableExplicitGC",
+
+        # G1 настройки
+        "-XX:G1NewSizePercent=30",
+        "-XX:G1MaxNewSizePercent=40",
+        "-XX:G1HeapRegionSize=8M",
+        "-XX:G1ReservePercent=20",
+        "-XX:G1HeapWastePercent=5",
+        "-XX:G1MixedGCCountTarget=4",
+        "-XX:InitiatingHeapOccupancyPercent=15",
+        "-XX:G1MixedGCLiveThresholdPercent=90",
+        "-XX:G1RSetUpdatingPauseTimePercent=5",
+        "-XX:SurvivorRatio=32",
+        "-XX:+PerfDisableSharedMem",
+        "-XX:MaxTenuringThreshold=1",
+
+        # RAM
+        f"-Xmx{ram_mb}M",
+        f"-Xms{min(ram_mb, 1024)}M",
+    ]
 
     options = {
         "username": username,
         "uuid": offline_uuid(username),
         "token": token or "0",
         "executablePath": find_java(java_path),
-        "jvmArguments": [
-            f"-Xmx{ram_mb}M",
-            f"-Xms{min(ram_mb, 1024)}M",
-        ],
+        "jvmArguments": jvm_args,
         "gameDirectory": str(client_dir),
         "launcherName": "MyLauncher",
         "launcherVersion": "1.0.0",
@@ -179,19 +206,38 @@ def build_launch_command(
 
     try:
         return minecraft_launcher_lib.command.get_minecraft_command(
-            version_id, str(mc_dir), options
+            version_id,
+            str(mc_dir),
+            options,
         )
+
     except Exception as e:
         log.exception("build command failed")
-        raise MinecraftError(f"Не удалось собрать команду запуска: {e}")
+        raise MinecraftError(
+            f"Не удалось собрать команду запуска: {e}"
+        )
 
 
 # ---------- Запуск ----------
 
-def launch_minecraft(cmd: list[str], cwd: Path) -> None:
+def launch_minecraft(cmd: list[str], client_dir: Path) -> subprocess.Popen:
     log.info("Запуск Minecraft")
+
     try:
-        subprocess.Popen(cmd, cwd=str(cwd))
+        process = subprocess.Popen(
+            cmd,
+            cwd=str(client_dir),
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            creationflags=subprocess.CREATE_NEW_PROCESS_GROUP,
+        )
+
+        log.info(f"Minecraft запущен, PID={process.pid}")
+        return process
+
     except Exception as e:
         log.exception("launch failed")
-        raise MinecraftError(f"Ошибка запуска Minecraft: {e}")
+        raise MinecraftError(
+            f"Ошибка запуска Minecraft: {describe_error(e)}"
+        )

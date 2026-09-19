@@ -7,17 +7,30 @@ DATA_DIR = ROOT / "data"
 LOGS_DIR = ROOT / "logs"
 DATA_DIR.mkdir(exist_ok=True)
 LOGS_DIR.mkdir(exist_ok=True)
-IP_SERVER = "createlandsmp.play.ski:25565"  # ← вписать свой IP сервера
 
 CONFIG_PATH = DATA_DIR / "config.json"
 
 # ============================================================
 #   ЗАШИТЫЙ РЕПОЗИТОРИЙ — правится только здесь
 # ============================================================
-GITHUB_REPO = "owner/repo"          # ← вписать свой owner/repo
+GITHUB_REPO = "adsltwitchgaming-collab/SMPCreateUpdate"          # ← вписать свой owner/repo
+GITHUB_BRANCH = "main"              # ветка, из которой берётся сборка
+IP_SERVER = "createlandsmp.play.ski:25565"
 
-# Если эта папка существует и содержит .mrpack — берём релиз из неё,
-# GitHub не дёргается. Для отладки.
+# ============================================================
+#   ИСТОЧНИК СБОРКИ
+# ============================================================
+# True  — тестовый режим: сборка берётся из локальной папки TEST_RELEASE_DIR
+#         (сборка в том же формате, что и в репозитории), GitHub вообще не дёргается.
+# False — боевой режим: сборка берётся из репозитория GITHUB_REPO (zip-архив ветки GITHUB_BRANCH).
+#         Релизы и GitHub API не используются.
+#
+# Что лежит в репозитории (и в test_release/) — определяется автоматически:
+#   1. файл *.mrpack                              — ставится как модпак Modrinth;
+#   2. modrinth.index.json + overrides/           — то же, но распакованное;
+#   3. обычная папка клиента (mods/, config/, ...) — копируется как есть;
+#      необязательный pack.json задаёт версии: {"minecraft": "1.21.1", "neoforge": "21.1.77"}
+TEST_LOCAL_MODPACK = False
 TEST_RELEASE_DIR = ROOT / "test_release"
 
 
@@ -55,7 +68,5 @@ def save_config(cfg: dict) -> None:
 
 
 def is_test_mode() -> bool:
-    """True, если в test_release/ есть .mrpack."""
-    if not TEST_RELEASE_DIR.exists():
-        return False
-    return any(TEST_RELEASE_DIR.glob("*.mrpack"))
+    """Тестовый режим включается только флагом TEST_LOCAL_MODPACK выше."""
+    return bool(TEST_LOCAL_MODPACK)
