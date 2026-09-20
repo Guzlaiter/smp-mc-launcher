@@ -15,7 +15,15 @@ from pathlib import Path
 from typing import Callable
 
 from app.config import GITHUB_BRANCH, GITHUB_REPO, TEST_RELEASE_DIR, is_test_mode, save_config
-from app.github_updater import GithubUpdater, LocalUpdater, UpdateError, install_pack
+from app.github_updater import (
+    GithubUpdater,
+    LocalUpdater,
+    UpdateError,
+    check_pack,
+    install_pack,
+    remove_old_pack,
+    save_manifest,
+)
 from app.minecraft import (
     MinecraftError,
     build_launch_command,
@@ -230,8 +238,17 @@ class LauncherController:
             return
 
         try:
-            self._status("Установка сборки...")
+            # Новая сборка уже скачана. Сначала убеждаемся, что она рабочая, и только потом
+            # убираем старую (иначе пустой/битый репозиторий оставил бы игрока без сборки)
+            check_pack(root)
+            self._status("Удаление старой сборки...")
+            self._progress(0, "")
+            remove_old_pack(client_dir, self._manifest_file())
+
+            self._status("Установка новой сборки...")
             info = install_pack(root, client_dir, up_cb)
+            # запоминаем, что именно поставили — при следующем обновлении удалим ровно это
+            save_manifest(self._manifest_file(), info.get("files", []), tag)
         except Exception as e:
             log.exception("install pack failed")
             self._status(str(e) if isinstance(e, UpdateError)
@@ -304,7 +321,7 @@ class LauncherController:
                 ram_mb=int(self.cfg.get("ram_mb", 4096)),
                 java_path=java_path,
             )
-            launch_minecraft(cmd, client_dir=client_dir)
+            launch_minecraft(cmd, cwd=client_dir)
             self._status("Minecraft запущен", "ok")
 
             if self.cfg.get("close_after_launch"):
@@ -322,6 +339,10 @@ class LauncherController:
     # ==================================================================
     #                        Версия установленной сборки
     # ==================================================================
+    def _manifest_file(self) -> Path:
+        """Список файлов установленной сборки (лежит рядом с client/, не внутри)."""
+        return Path(self.cfg["game_directory"]) / "pack_files.json"
+
     def _version_file(self) -> Path:
         return Path(self.cfg["game_directory"]) / "pack_version.txt"
 

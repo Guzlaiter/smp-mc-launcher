@@ -158,7 +158,7 @@ class CustomWindow(tk.Tk):
         super().__init__()
         self.title(title)
         self.configure(bg=C.WINDOW)
-        self.overrideredirect(True)
+        self.overrideredirect(False)
 
         self.assets = Assets(ASSETS_DIR)
         self._drag = None
@@ -183,21 +183,21 @@ class CustomWindow(tk.Tk):
     # ------------------------------------------------------------------
     def _build_titlebar(self, title: str) -> None:
         self.titlebar = tk.Frame(self, bg=C.TITLEBAR, height=Size.TITLEBAR_H)
-        self.titlebar.pack(side="top", fill="x")
-        self.titlebar.pack_propagate(False)
+        # self.titlebar.pack(side="top", fill="x")
+        # self.titlebar.pack_propagate(False)
 
-        self.title_label = tk.Label(self.titlebar, text=title, bg=C.TITLEBAR,
-                                    fg=C.TITLEBAR_FG, font=F.SMALL)
-        self.title_label.pack(side="left", padx=12)
+        # self.title_label = tk.Label(self.titlebar, text=title, bg=C.TITLEBAR,
+        #                             fg=C.TITLEBAR_FG, font=F.SMALL)
+        # self.title_label.pack(side="left", padx=12)
 
-        for w in (self.titlebar, self.title_label):
-            w.bind("<ButtonPress-1>", self._start_drag)
-            w.bind("<ButtonRelease-1>", self._stop_drag)
-            w.bind("<B1-Motion>", self._do_drag)
+        # for w in (self.titlebar, self.title_label):
+        #     w.bind("<ButtonPress-1>", self._start_drag)
+        #     w.bind("<ButtonRelease-1>", self._stop_drag)
+        #     w.bind("<B1-Motion>", self._do_drag)
 
-        # справа налево: закрыть, свернуть (остальные добавляются через add_titlebar_button)
-        self.add_titlebar_button("close.png", "close_press.png", self._on_close)
-        # self.add_titlebar_button("minimize.png", "minimize_press.png", self.minimize)
+        # # справа налево: закрыть, свернуть (остальные добавляются через add_titlebar_button)
+        # self.add_titlebar_button("close.png", "close_press.png", self._on_close)
+        # # self.add_titlebar_button("minimize.png", "minimize_press.png", self.minimize)
 
     def add_titlebar_button(self, icon: str, icon_pressed: str,
                             command: Callable[[], None]) -> ButtonWidget:
@@ -252,7 +252,7 @@ class CustomWindow(tk.Tk):
         if event.widget is self and self._minimized:
             self._minimized = False
             self.update_idletasks()
-            self.overrideredirect(True)
+            self.overrideredirect(False)
             self.state("normal")
             self.after(50, self._fix_taskbar_icon)
 

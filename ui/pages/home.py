@@ -36,7 +36,7 @@ class HomePage(BasePage):
         self.canvas.place(x=0, y=0, relwidth=1, relheight=1)
         self._bg_item = self.canvas.create_image(0, 0, anchor="nw")
 
-        self._build_news()
+        # self._build_news()
         self._build_play()
         self._build_stats()
 

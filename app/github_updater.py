@@ -13,6 +13,10 @@
     2. распакованный .mrpack: modrinth.index.json (+ overrides/);
     3. обычная папка клиента: mods/, config/, ... — копируется в клиент как есть.
        Необязательный pack.json задаёт версии: {"minecraft": "1.21.1", "neoforge": "21.1.77"}.
+
+Обновление = ЧИСТАЯ установка: сначала скачивается новая сборка, затем удаляется старая
+(только её файлы, по списку pack_files.json — миры и настройки игрока не трогаются),
+затем ставится новая (см. remove_old_pack / install_pack).
 """
 import json
 import shutil
@@ -203,6 +207,32 @@ def install_pack(root: Path, target_dir: Path, progress_cb: ProgressCb = None) -
     return install_plain(root, target_dir, progress_cb)
 
 
+def check_pack(root: Path) -> None:
+    """
+    Проверяет НОВУЮ сборку до удаления старой: пустой или битый репозиторий
+    не должен стоить игроку рабочей сборки. Бросает UpdateError.
+    """
+    mrpacks = sorted(root.glob("*.mrpack"))
+    if mrpacks:
+        try:
+            read_mrpack_index(mrpacks[0])
+        except UpdateError:
+            raise
+        except Exception as e:
+            raise UpdateError(f"{mrpacks[0].name} повреждён: {e}") from e
+        return
+    index = root / "modrinth.index.json"
+    if index.exists():
+        try:
+            json.loads(index.read_text(encoding="utf-8"))
+        except Exception as e:
+            raise UpdateError(f"modrinth.index.json повреждён: {e}") from e
+        return
+    if not _pack_files(root):
+        raise UpdateError("В репозитории нет файлов сборки.")
+    _read_pack_json(root)
+
+
 # --- обычная папка клиента ---------------------------------------------------
 
 _SKIP_TOP_DIRS = {".git", ".github"}
@@ -260,27 +290,11 @@ def install_plain(root: Path, target_dir: Path, progress_cb: ProgressCb = None) 
         if progress_cb:
             progress_cb(stage, idx, total, rel.as_posix())
 
-    removed = _sync_mods(root, target_dir)
-    log.info(f"Папка клиента: скопировано {copied}, без изменений {skipped}, "
-             f"удалено старых модов {removed}")
-    info = {"failed": 0, "copied": copied, "skipped": skipped, "removed": removed}
+    log.info(f"Папка клиента: скопировано {copied}, без изменений {skipped}")
+    info = {"failed": 0, "copied": copied, "skipped": skipped,
+            "files": [rel.as_posix() for rel in files]}
     info.update(_read_pack_json(root))
     return info
-
-
-def _sync_mods(root: Path, target_dir: Path) -> int:
-    """Удаляет из клиентского mods/ .jar, которых больше нет в репозитории
-    (иначе старая и новая версии мода лежат вместе, и игра падает)."""
-    src, dst = root / "mods", target_dir / "mods"
-    if not src.is_dir() or not dst.is_dir():
-        return 0
-    keep = {p.name for p in src.iterdir() if p.is_file()}
-    removed = 0
-    for p in dst.iterdir():
-        if p.is_file() and p.suffix.lower() == ".jar" and p.name not in keep:
-            p.unlink()
-            removed += 1
-    return removed
 
 
 # --- .mrpack -----------------------------------------------------------------
@@ -306,6 +320,7 @@ def install_mrpack(mrpack_path: Path, target_dir: Path,
                    progress_cb: ProgressCb = None) -> dict:
     target_dir.mkdir(parents=True, exist_ok=True)
     downloaded = skipped = failed = 0
+    installed: list[str] = []   # что сборка кладёт в клиент — для удаления при обновлении
 
     with zipfile.ZipFile(mrpack_path, "r") as z:
         with z.open("modrinth.index.json") as f:
@@ -322,6 +337,7 @@ def install_mrpack(mrpack_path: Path, target_dir: Path,
         for member in z.namelist():
             if member.startswith("overrides/") and not member.endswith("/"):
                 rel = member[len("overrides/"):]
+                installed.append(rel)
                 dst = target_dir / rel
                 dst.parent.mkdir(parents=True, exist_ok=True)
                 with z.open(member) as src, open(dst, "wb") as out:
@@ -339,6 +355,7 @@ def install_mrpack(mrpack_path: Path, target_dir: Path,
 
             if entry.get("env", {}).get("client") == "unsupported":
                 continue
+            installed.append(rel)
 
             hashes = entry.get("hashes", {})
             want_sha1 = (hashes.get("sha1") or "").lower()
@@ -387,5 +404,89 @@ def install_mrpack(mrpack_path: Path, target_dir: Path,
             downloaded += 1
 
     log.info(f"mrpack: скачано {downloaded}, пропущено {skipped}, ошибок {failed}")
-    info.update(downloaded=downloaded, skipped=skipped, failed=failed)
+    info.update(downloaded=downloaded, skipped=skipped, failed=failed,
+                files=sorted(set(installed)))
     return info
+
+
+# ============================================================
+#              Удаление старой сборки (перед обновлением)
+# ============================================================
+
+# Если списка файлов нет (сборку ставила прежняя версия лаунчера) — один раз сносим
+# папки, которые заведомо принадлежат сборке. saves/, options.txt, servers.dat,
+# screenshots/, resourcepacks/ и т.п. НЕ трогаем.
+LEGACY_PACK_DIRS = ("mods", "config", "defaultconfigs", "kubejs")
+
+
+def load_manifest(manifest_path: Path) -> list[str] | None:
+    """Список файлов прошлой установки или None (нет списка / он повреждён)."""
+    try:
+        data = json.loads(manifest_path.read_text(encoding="utf-8"))
+        files = data.get("files")
+        return [str(f) for f in files] if isinstance(files, list) else None
+    except Exception:
+        return None
+
+
+def save_manifest(manifest_path: Path, files: list[str], version: str = "") -> None:
+    manifest_path.parent.mkdir(parents=True, exist_ok=True)
+    manifest_path.write_text(
+        json.dumps({"version": version, "files": sorted(files)}, ensure_ascii=False, indent=1),
+        encoding="utf-8")
+
+
+def remove_old_pack(target_dir: Path, manifest_path: Path) -> int:
+    """
+    Удаляет прежнюю сборку из target_dir. Возвращает число удалённых файлов.
+    По списку файлов (manifest) — точно; если списка нет — LEGACY_PACK_DIRS.
+    Если файл занят (игра запущена), бросает UpdateError, ничего лишнего не теряя:
+    список остаётся, и повторное обновление доудалит остальное.
+    """
+    if not target_dir.exists():
+        manifest_path.unlink(missing_ok=True)
+        return 0
+
+    base = target_dir.resolve()
+    files = load_manifest(manifest_path)
+    removed = 0
+
+    if files is None:
+        for name in LEGACY_PACK_DIRS:
+            d = target_dir / name
+            if d.is_dir():
+                removed += sum(1 for p in d.rglob("*") if p.is_file())
+                try:
+                    shutil.rmtree(d)
+                except OSError as e:
+                    raise _locked_error(name, e) from e
+        log.info(f"Списка файлов нет — удалены папки {LEGACY_PACK_DIRS}: {removed} файлов")
+    else:
+        parents: set[Path] = set()
+        for rel in files:
+            p = (target_dir / rel).resolve()
+            if base not in p.parents:      # защита от '../' в чужом списке
+                log.warning(f"Пропущен путь вне папки клиента: {rel}")
+                continue
+            if p.is_file() or p.is_symlink():
+                try:
+                    p.unlink()
+                except OSError as e:
+                    raise _locked_error(rel, e) from e
+                removed += 1
+                parents.add(p.parent)
+        # пустые папки убираем (глубокие сначала); папки с файлами игрока остаются
+        for d in sorted(parents, key=lambda x: len(x.parts), reverse=True):
+            while d != base and d.is_dir() and not any(d.iterdir()):
+                d.rmdir()
+                d = d.parent
+        log.info(f"Старая сборка удалена по списку: {removed} файлов")
+
+    manifest_path.unlink(missing_ok=True)
+    return removed
+
+
+def _locked_error(what: str, e: OSError) -> UpdateError:
+    log.error(f"Не удалось удалить {what}: {e}")
+    return UpdateError(f"Не удалось удалить старую сборку ({what}): {e.strerror or e}. "
+                       f"Закройте Minecraft и повторите обновление.")
