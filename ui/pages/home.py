@@ -5,7 +5,7 @@ from ui.pages.base import BasePage
 from ui.theme import C, F
 from ui.widgets import ImageButton
 from app.utils import get_stat
-
+import threading
 # ---- Заглушки: замените реальными данными ---------------------------------
 NEWS = [
     ("МЕГА-КРАНЫ",           "Представлены новые огромные краны для ваших построек."),
@@ -75,18 +75,118 @@ class HomePage(BasePage):
         self._ver_text = self.canvas.create_text(0, 0, text="", font=F.SMALL_B, fill=C.TEXT)
 
     def _build_stats(self) -> None:
-        self.stats = tk.Frame(self, bg=C.PANEL, bd=1, relief="solid", padx=15, pady=10)
-        tk.Label(self.stats, text="СТАТУС СЕРВЕРА", font=F.SMALL_B, bg=C.PANEL,
-                 fg=C.ACCENT).grid(row=0, column=0, columnspan=2, pady=(0, 6))
-        tk.Frame(self.stats, bg=C.BORDER, height=1).grid(
-            row=1, column=0, columnspan=2, sticky="ew", pady=(0, 6))
-        SERVER_STATS = get_stat()
-        for i, (k, v) in enumerate(SERVER_STATS):
-            tk.Label(self.stats, text=k, bg=C.PANEL, fg="#888",
-                     font=F.SMALL).grid(row=i + 2, column=0, sticky="w", pady=1)
-            tk.Label(self.stats, text=v, bg=C.PANEL, fg="white",
-                     font=F.SMALL).grid(row=i + 2, column=1, sticky="e", padx=(15, 0), pady=1)
+        self.stats = tk.Frame(
+            self,
+            bg=C.PANEL,
+            bd=1,
+            relief="solid",
+            padx=15,
+            pady=10
+        )
 
+        tk.Label(
+            self.stats,
+            text="СТАТУС СЕРВЕРА",
+            font=F.SMALL_B,
+            bg=C.PANEL,
+            fg=C.ACCENT
+        ).grid(
+            row=0,
+            column=0,
+            columnspan=2,
+            pady=(0, 6)
+        )
+
+        tk.Frame(
+            self.stats,
+            bg=C.BORDER,
+            height=1
+        ).grid(
+            row=1,
+            column=0,
+            columnspan=2,
+            sticky="ew",
+            pady=(0, 6)
+        )
+
+        self._stat_labels = {}
+
+        # Создаём Label один раз
+        for i, (key, value) in enumerate([
+            ("Игроки:", "-"),
+            ("Пинг:", "-"),
+            ("Статус:", "-"),
+        ]):
+            tk.Label(
+                self.stats,
+                text=key,
+                bg=C.PANEL,
+                fg="#888",
+                font=F.SMALL
+            ).grid(
+                row=i + 2,
+                column=0,
+                sticky="w",
+                pady=1
+            )
+
+            value_label = tk.Label(
+                self.stats,
+                text=value,
+                bg=C.PANEL,
+                fg="white",
+                font=F.SMALL
+            )
+            value_label.grid(
+                row=i + 2,
+                column=1,
+                sticky="e",
+                padx=(15, 0),
+                pady=1
+            )
+
+            self._stat_labels[key] = value_label
+
+        self._stats_job = None
+        self._stats_thread = None
+
+        self._update_stats()
+
+    def _update_stats(self) -> None:
+        # Не запускаем новый запрос, если предыдущий ещё выполняется
+        if self._stats_thread is None or not self._stats_thread.is_alive():
+            self._stats_thread = threading.Thread(
+                target=self._get_stats_thread,
+                daemon=True
+            )
+            self._stats_thread.start()
+
+        # Следующее обновление через 3 секунды
+        self._stats_job = self.after(3000, self._update_stats)
+
+
+    def _get_stats_thread(self) -> None:
+        try:
+            stats = get_stat()
+
+        except Exception:
+            stats = [
+                ("Игроки:", "-"),
+                ("Пинг:", "-"),
+                ("Статус:", "Недоступен"),
+            ]
+
+        # В Tkinter нельзя менять виджеты из другого потока.
+        # Поэтому возвращаемся в главный поток.
+        self.after(0, lambda: self._apply_stats(stats))
+
+
+    def _apply_stats(self, stats) -> None:
+        for key, value in stats:
+            label = self._stat_labels.get(key)
+
+            if label is not None:
+                label.config(text=value)
     # ------------------------------------------------------------------
     # Раскладка / фон
     # ------------------------------------------------------------------
