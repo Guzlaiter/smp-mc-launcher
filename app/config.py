@@ -77,7 +77,7 @@ DEFAULT_CONFIG = {
     "game_directory": str(Path(GAME_DIR).resolve()),
     "minecraft_version": "1.21.1",
     "neoforge_version": "",
-    "ram_mb": 4096,
+    "ram_mb": 8192,
     "close_after_launch": False,
     "username": "Player",
     "server_name": "MY SERVER",

@@ -7,6 +7,7 @@ from ui.pages.base import BasePage
 from ui.theme import C, F
 
 RAM_MIN, RAM_MAX = 1024, 65536
+RAM_STEP = 1024
 
 
 class SettingsPage(BasePage):
@@ -26,26 +27,61 @@ class SettingsPage(BasePage):
         cfg = self.ctx.controller.cfg
         self.var_name   = tk.StringVar(value=cfg.get("username", ""))
         self.var_ram    = tk.IntVar(value=int(cfg.get("ram_mb", 4096)))
+        self.var_ram_entry = tk.StringVar(value=str(self.var_ram.get()))
+        self.var_ram_pos   = tk.DoubleVar(value=self.var_ram.get())
         self.var_dir    = tk.StringVar(value=cfg.get("game_directory", ""))
         self.var_java   = tk.StringVar(value=cfg.get("java_path", ""))
         self.var_server = tk.StringVar(value=cfg.get("server_name", ""))
         self.var_close  = tk.BooleanVar(value=bool(cfg.get("close_after_launch", False)))
         self.var_auto   = tk.BooleanVar(value=bool(cfg.get("auto_check_updates", True)))
 
-        # --- форма: label | поле | кнопка --------------------------------
-        form = tk.Frame(outer, bg=C.BG)
-        form.pack(fill="x")
-        form.columnconfigure(1, weight=1)
-        self._row = 0
+        # любое изменение «истинного» значения RAM → обновляем поле ввода
+        self.var_ram.trace_add("write", self._sync_ram_entry)
 
+        # --- вкладки ----------------------------------------------------
+        # Требуется стиль "Dark.TNotebook" в ui/theme.py
+        nb = ttk.Notebook(outer, style="Dark.TNotebook")
+        nb.pack(fill="both", expand=True, pady=(10, 12))
+
+        self._build_player_tab(nb)
+        self._build_game_tab(nb)
+        self._build_launcher_tab(nb)
+
+        # --- низ: Сбросить ... статус ... Сохранить ----------------------
+        bar = tk.Frame(outer, bg=C.BG)
+        bar.pack(fill="x", side="bottom")
+        ttk.Button(bar, text="Сбросить", style="Dark.TButton",
+                   command=self._reset).pack(side="left")
+        ttk.Button(bar, text="Сохранить", style="Accent.TButton",
+                   command=self._save).pack(side="right")
+        self.lbl_saved = tk.Label(bar, text="", bg=C.BG, fg=C.ACCENT,
+                                  font=("Arial", 9, "italic"))
+        self.lbl_saved.pack(side="right", padx=15)
+
+    # --- вкладки ----------------------------------------------------------
+    def _build_player_tab(self, nb) -> None:
+        tab = tk.Frame(nb, bg=C.BG)
+        nb.add(tab, text="  Игрок  ")
+        form = self._form(tab)
+        self._row = 0
         self._section(form, "Игрок")
         self._entry(form, "Ник в игре", self.var_name)
         self._ram_row(form)
 
+    def _build_game_tab(self, nb) -> None:
+        tab = tk.Frame(nb, bg=C.BG)
+        nb.add(tab, text="  Игра  ")
+        form = self._form(tab)
+        self._row = 0
         self._section(form, "Игра")
         self._entry(form, "Папка игры", self.var_dir, browse=self._browse_dir)
         self._entry(form, "Java (пусто = авто)", self.var_java, browse=self._browse_java)
 
+    def _build_launcher_tab(self, nb) -> None:
+        tab = tk.Frame(nb, bg=C.BG)
+        nb.add(tab, text="  Лаунчер  ")
+        form = self._form(tab)
+        self._row = 0
         self._section(form, "Лаунчер")
         self._entry(form, "Название в окне", self.var_server)
 
@@ -61,18 +97,13 @@ class SettingsPage(BasePage):
                                     command=self.ctx.controller.check_updates)
         self.btn_check.grid(row=self._next(), column=0, columnspan=3, sticky="w", pady=(8, 0))
 
-        # --- низ: Сбросить ... статус ... Сохранить ----------------------
-        bar = tk.Frame(outer, bg=C.BG)
-        bar.pack(fill="x", side="bottom")
-        ttk.Button(bar, text="Сбросить", style="Dark.TButton",
-                   command=self._reset).pack(side="left")
-        ttk.Button(bar, text="Сохранить", style="Accent.TButton",
-                   command=self._save).pack(side="right")
-        self.lbl_saved = tk.Label(bar, text="", bg=C.BG, fg=C.ACCENT,
-                                  font=("Arial", 9, "italic"))
-        self.lbl_saved.pack(side="right", padx=15)
-
     # --- конструктор формы ------------------------------------------------
+    def _form(self, parent) -> tk.Frame:
+        f = tk.Frame(parent, bg=C.BG)
+        f.pack(fill="both", expand=True, padx=20, pady=20)
+        f.columnconfigure(1, weight=1)
+        return f
+
     def _next(self) -> int:
         self._row += 1
         return self._row - 1
@@ -94,16 +125,70 @@ class SettingsPage(BasePage):
             ttk.Button(form, text="Обзор...", style="Dark.TButton",
                        command=browse).grid(row=r, column=2, padx=(8, 0), pady=3)
 
+    # --- RAM: слайдер (шаг 1024) + ручной ввод ----------------------------
     def _ram_row(self, form) -> None:
         r = self._next()
         tk.Label(form, text="Выделяемая RAM (MB)", bg=C.BG, fg=C.TEXT, font=F.TEXT,
                  width=20, anchor="w").grid(row=r, column=0, sticky="w", pady=3)
+
         box = tk.Frame(form, bg=C.BG)
-        box.grid(row=r, column=1, sticky="w", pady=3)
-        ttk.Spinbox(box, from_=RAM_MIN, to=32768, increment=512, textvariable=self.var_ram,
-                    style="Dark.TSpinbox", font=F.TEXT, width=10).pack(side="left")
-        tk.Label(box, text="   рекомендуется 4096–8192 MB", bg=C.BG, fg=C.TEXT_DIM,
-                 font=F.SMALL).pack(side="left")
+        box.grid(row=r, column=1, columnspan=2, sticky="ew", pady=3)
+        box.columnconfigure(0, weight=1)
+
+        # слайдер слева, растягивается
+        self.scl_ram = ttk.Scale(box, from_=RAM_MIN, to=32768, orient="horizontal",
+                                 variable=self.var_ram_pos, command=self._on_slider)
+        self.scl_ram.grid(row=0, column=0, sticky="ew", padx=(0, 8))
+        # при отпускании мыши — «прилипаем» к сетке 1024
+        self.scl_ram.bind("<ButtonRelease-1>", self._snap_slider)
+
+        # ручной ввод
+        self.ent_ram = ttk.Entry(box, textvariable=self.var_ram_entry, width=8,
+                                 style="Dark.TEntry", font=F.TEXT, justify="right")
+        self.ent_ram.grid(row=0, column=1, sticky="e", ipady=3)
+        self.ent_ram.bind("<Return>",   self._commit_ram)
+        self.ent_ram.bind("<FocusOut>", self._commit_ram)
+
+        tk.Label(box, text="MB", bg=C.BG, fg=C.TEXT_DIM,
+                 font=F.SMALL).grid(row=0, column=2, sticky="w", padx=(4, 0))
+
+        tk.Label(box, text=f"шаг {RAM_STEP} MB · рекомендуется 4096–8192 MB",
+                 bg=C.BG, fg=C.TEXT_DIM, font=F.SMALL).grid(
+            row=1, column=0, columnspan=3, sticky="w", pady=(4, 0))
+
+    def _on_slider(self, val) -> None:
+        """Тянем слайдер — обновляем «истинное» значение (кратно RAM_STEP)."""
+        try:
+            v = int(round(float(val) / RAM_STEP) * RAM_STEP)
+        except (ValueError, tk.TclError):
+            return
+        v = max(RAM_MIN, min(RAM_MAX, v))
+        if self.var_ram.get() != v:
+            self.var_ram.set(v)
+
+    def _snap_slider(self, event=None) -> None:
+        """При отпускании мыши выравниваем позицию слайдера по сетке."""
+        v = max(RAM_MIN, min(RAM_MAX,
+                             int(round(self.var_ram_pos.get() / RAM_STEP) * RAM_STEP)))
+        self.var_ram_pos.set(v)
+        self.var_ram.set(v)
+
+    def _sync_ram_entry(self, *args) -> None:
+        try:
+            self.var_ram_entry.set(str(self.var_ram.get()))
+        except (ValueError, tk.TclError):
+            pass
+
+    def _commit_ram(self, event=None) -> None:
+        """Ручной ввод: любое значение в [RAM_MIN, RAM_MAX], слайдер подтягиваем."""
+        try:
+            v = int(float(self.var_ram_entry.get()))
+        except (ValueError, tk.TclError):
+            v = self.var_ram.get()
+        v = max(RAM_MIN, min(RAM_MAX, v))
+        self.var_ram.set(v)
+        self.var_ram_entry.set(str(v))
+        self.var_ram_pos.set(v)
 
     # --- обработчики -------------------------------------------------------
     def _browse_dir(self) -> None:
@@ -150,6 +235,7 @@ class SettingsPage(BasePage):
         self.var_dir.set(d["game_directory"])
         self.var_java.set(d["java_path"])
         self.var_ram.set(d["ram_mb"])
+        self.var_ram_pos.set(d["ram_mb"])
         self.var_close.set(d["close_after_launch"])
         self.var_auto.set(d["auto_check_updates"])
         self._flash("Сброшено (не сохранено)", C.TEXT_DIM)
