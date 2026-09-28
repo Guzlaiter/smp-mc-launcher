@@ -19,3 +19,5 @@ test_release/*
 game/*
 game/
 game
+data/
+data/config.json
