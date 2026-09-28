@@ -83,6 +83,11 @@ DEFAULT_CONFIG = {
     "server_name": "MY SERVER",
     "auto_check_updates": True,
     "java_path": "",
+    # При обновлении сборки Minecraft/NeoForge переустанавливаются, только если их версия
+    # реально изменилась (иначе обновляются только файлы сборки — так быстрее и меньше
+    # нагружает Mojang/NeoForge). Эти галочки форсируют переустановку в любом случае.
+    "reinstall_minecraft_on_update": False,
+    "reinstall_neoforge_on_update": False,
 }
 
 

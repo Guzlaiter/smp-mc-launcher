@@ -16,3 +16,6 @@ test_release/*
 *.spec
 *.zip
 *.rar
+game/*
+game/
+game

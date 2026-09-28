@@ -17,6 +17,11 @@
 Обновление = ЧИСТАЯ установка: сначала скачивается новая сборка, затем удаляется старая
 (только её файлы, по списку pack_files.json — миры и настройки игрока не трогаются),
 затем ставится новая (см. remove_old_pack / install_pack).
+
+ЛИЧНЫЕ НАСТРОЙКИ ИГРОКА (options.txt и т.п., см. PROTECTED_FILENAMES) — особый случай:
+даже если автор сборки положил их в overrides/ (или они попали в обычную папку клиента),
+лаунчер ставит их только при первой установке и никогда не трогает при обновлениях —
+иначе FOV, громкость звука и прочие настройки сбрасывались бы при каждом обновлении.
 """
 import json
 import shutil
@@ -41,6 +46,16 @@ ProgressCb = Optional[Callable[[str, int, int, str], None]]
 
 class UpdateError(Exception):
     pass
+
+
+# Личные настройки игрока: создаются из сборки один раз (если их ещё нет), но никогда
+# не перезаписываются и не удаляются при последующих обновлениях. Сравнение по имени
+# файла, без учёта регистра — не важно, в какой подпапке он окажется.
+PROTECTED_FILENAMES = {"options.txt", "optionsof.txt"}
+
+
+def is_protected(rel) -> bool:
+    return Path(rel).name.lower() in PROTECTED_FILENAMES
 
 
 def network_error(action: str, e: Exception) -> UpdateError:
@@ -275,10 +290,26 @@ def install_plain(root: Path, target_dir: Path, progress_cb: ProgressCb = None) 
     if not total:
         raise UpdateError("В репозитории нет файлов сборки.")
 
-    copied = skipped = 0
+    copied = skipped = protected = 0
+    manifest: list[str] = []
     for idx, rel in enumerate(files, start=1):
         src, dst = root / rel, target_dir / rel
         dst.parent.mkdir(parents=True, exist_ok=True)
+
+        if is_protected(rel):
+            # личный файл игрока: ставим только если его ещё нет; в манифест НЕ попадает,
+            # чтобы будущее обновление его не удалило
+            if not dst.exists():
+                shutil.copyfile(src, dst)
+                stage = "copy"
+            else:
+                protected += 1
+                stage = "skip"
+            if progress_cb:
+                progress_cb(stage, idx, total, rel.as_posix())
+            continue
+
+        manifest.append(rel.as_posix())
         if dst.exists() and dst.stat().st_size == src.stat().st_size \
                 and sha1_file(dst) == sha1_file(src):
             skipped += 1
@@ -290,9 +321,9 @@ def install_plain(root: Path, target_dir: Path, progress_cb: ProgressCb = None) 
         if progress_cb:
             progress_cb(stage, idx, total, rel.as_posix())
 
-    log.info(f"Папка клиента: скопировано {copied}, без изменений {skipped}")
-    info = {"failed": 0, "copied": copied, "skipped": skipped,
-            "files": [rel.as_posix() for rel in files]}
+    log.info(f"Папка клиента: скопировано {copied}, без изменений {skipped}, "
+             f"личных настроек не тронуто {protected}")
+    info = {"failed": 0, "copied": copied, "skipped": skipped, "files": manifest}
     info.update(_read_pack_json(root))
     return info
 
@@ -334,14 +365,27 @@ def install_mrpack(mrpack_path: Path, target_dir: Path,
         }
 
         # overrides
+        protected_kept = 0
         for member in z.namelist():
             if member.startswith("overrides/") and not member.endswith("/"):
                 rel = member[len("overrides/"):]
-                installed.append(rel)
                 dst = target_dir / rel
                 dst.parent.mkdir(parents=True, exist_ok=True)
+
+                if is_protected(rel):
+                    # личный файл игрока (например options.txt, если автор пака зачем-то
+                    # положил его в overrides): ставим только при первой установке,
+                    # в манифест не добавляем — обновления его не тронут
+                    if dst.exists():
+                        protected_kept += 1
+                        continue
+                else:
+                    installed.append(rel)
+
                 with z.open(member) as src, open(dst, "wb") as out:
                     shutil.copyfileobj(src, out)
+        if protected_kept:
+            log.info(f"overrides: личных настроек не тронуто {protected_kept}")
 
         # files
         files = index.get("files", [])
@@ -355,7 +399,15 @@ def install_mrpack(mrpack_path: Path, target_dir: Path,
 
             if entry.get("env", {}).get("client") == "unsupported":
                 continue
-            installed.append(rel)
+
+            protected = is_protected(rel)
+            if protected and dst.exists():
+                # личный файл игрока уже есть на диске — не перезаписываем и не удаляем
+                if progress_cb:
+                    progress_cb("skip", idx, total, rel)
+                continue
+            if not protected:
+                installed.append(rel)
 
             hashes = entry.get("hashes", {})
             want_sha1 = (hashes.get("sha1") or "").lower()
@@ -464,6 +516,10 @@ def remove_old_pack(target_dir: Path, manifest_path: Path) -> int:
     else:
         parents: set[Path] = set()
         for rel in files:
+            if is_protected(rel):
+                # защита на случай, если файл попал в манифест ДО этой версии лаунчера
+                # (личные настройки игрока никогда не удаляются)
+                continue
             p = (target_dir / rel).resolve()
             if base not in p.parents:      # защита от '../' в чужом списке
                 log.warning(f"Пропущен путь вне папки клиента: {rel}")

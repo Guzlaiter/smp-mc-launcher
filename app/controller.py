@@ -33,7 +33,7 @@ from app.minecraft import (
     launch_minecraft,
 )
 from app.diagnostics import check_hosts, format_report, summarize
-from app.utils import describe_error, human_size, log
+from app.utils import describe_error, normal_size, log
 
 
 def _short(tag: str) -> str:
@@ -213,15 +213,20 @@ class LauncherController:
 
     def _update_job(self, tag: str) -> None:
         game_dir = Path(self.cfg["game_directory"])
+        mc_dir = game_dir / "minecraft"
         client_dir = game_dir / "client"
         work_dir = game_dir / "tmp"
+        mc_dir.mkdir(parents=True, exist_ok=True)
+
+        old_mc = self.cfg.get("minecraft_version", "")
+        old_nf = self.cfg.get("neoforge_version", "")
 
         def dl_cb(done, total):
             if total:
                 self._progress(int(done / total * 100),
-                               f"Скачивание  {human_size(done)} / {human_size(total)}")
+                               f"Скачивание  {normal_size(done)} / {normal_size(total)}")
             else:  # codeload не сообщает размер архива заранее
-                self._progress(0, f"Скачивание  {human_size(done)}")
+                self._progress(0, f"Скачивание  {normal_size(done)}")
 
         def up_cb(stage, idx, total, msg):
             pct = int(idx / total * 100) if total else 0
@@ -258,11 +263,16 @@ class LauncherController:
             if not self.test_mode:  # скачанную копию репозитория не храним (test_release не трогаем!)
                 shutil.rmtree(work_dir / "repo", ignore_errors=True)
 
-        # Версии из сборки: mrpack задаёт обе всегда, pack.json — только то, что указал
+        # Версии из сборки: mrpack задаёт обе всегда, pack.json — только то, что указал.
+        # Если сборка версию не указывает (pack.json без поля) — считаем её неизменной.
         if info.get("minecraft"):
             self.cfg["minecraft_version"] = info["minecraft"]
         if "neoforge" in info:
             self.cfg["neoforge_version"] = info["neoforge"] or ""
+        mc_version = self.cfg["minecraft_version"]
+        nf_version = self.cfg.get("neoforge_version", "")
+        mc_changed = mc_version != old_mc
+        nf_changed = nf_version != old_nf
         save_config(self.cfg)
 
         failed = int(info.get("failed", 0))
@@ -274,9 +284,46 @@ class LauncherController:
                          f"и повторите обновление", "error")
             return
 
+        # Minecraft/NeoForge трогаем, только если их версия реально изменилась — иначе,
+        # если обновилась только сборка модов, качаются только файлы сборки (см. выше).
+        # Галочки в Настройках позволяют форсировать переустановку в любом случае.
+        force_mc = mc_changed or bool(self.cfg.get("reinstall_minecraft_on_update"))
+        force_nf = nf_changed or bool(self.cfg.get("reinstall_neoforge_on_update"))
+        try:
+            self._ensure_minecraft(mc_dir, mc_version, nf_version, self.cfg.get("java_path", ""),
+                                   force_mc=force_mc, force_nf=force_nf)
+        except MinecraftError as e:
+            self._status(f"Установка Minecraft/NeoForge: {e}", "error")
+            return
+        except Exception as e:
+            log.exception("install mc/neoforge after update failed")
+            self._status(f"Установка Minecraft/NeoForge: {describe_error(e)}", "error")
+            return
+
         self._write_local_version(tag)
         self._status(f"Готово ({_short(tag)})", "ok")
         self._progress(100, "Готово")
+
+    def _ensure_minecraft(self, mc_dir: Path, mc_version: str, nf_version: str,
+                          java_path: str, force_mc: bool = False, force_nf: bool = False) -> None:
+        """
+        Ставит Minecraft/NeoForge, только если их ещё нет (или явно попросили force_*).
+        Используется и после обновления сборки (тогда force_* решают галочки в Настройках
+        и то, изменилась ли версия), и перед запуском игры как подстраховка (force всегда
+        False — там просто «доустановить, если чего-то не хватает»).
+        """
+        installed = installed_version_ids(mc_dir)
+
+        if force_mc or mc_version not in installed:
+            self._status("Установка Minecraft...")
+            install_minecraft(mc_dir, mc_version, java_path, self._mc_progress)
+            installed = installed_version_ids(mc_dir)
+
+        if nf_version:
+            has_nf = any("neoforge" in v.lower() and nf_version in v for v in installed)
+            if force_nf or not has_nf:
+                self._status("Установка NeoForge...")
+                install_neoforge(mc_dir, mc_version, nf_version, java_path, self._mc_progress)
 
     # ==================================================================
     #                              Игра
@@ -294,20 +341,11 @@ class LauncherController:
             mc_version = self.cfg["minecraft_version"]
             nf_version = self.cfg.get("neoforge_version", "")
             java_path = self.cfg.get("java_path", "")
-            installed = installed_version_ids(mc_dir)
 
-            if mc_version not in installed:
-                stage = "Установка Minecraft"
-                self._status("Установка Minecraft...")
-                install_minecraft(mc_dir, mc_version, java_path, self._mc_progress)
-
-            if nf_version:
-                has_nf = any("neoforge" in v.lower() and nf_version in v for v in installed)
-                if not has_nf:
-                    stage = "Установка NeoForge"
-                    self._status("Установка NeoForge...")
-                    install_neoforge(mc_dir, mc_version, nf_version,
-                                     java_path, self._mc_progress)
+            # Обычно уже поставлены при обновлении сборки — здесь просто страховка
+            # на случай первого запуска без обновления или удалённых вручную файлов.
+            stage = "Установка Minecraft/NeoForge"
+            self._ensure_minecraft(mc_dir, mc_version, nf_version, java_path)
 
             stage = "Запуск Minecraft"
             self._status("Запуск Minecraft...")

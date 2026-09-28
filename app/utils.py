@@ -36,7 +36,7 @@ def sha512_file(path: Path, chunk_size: int = 1024 * 1024) -> str:
     return h.hexdigest()
 
 
-def human_size(num: int) -> str:
+def normal_size(num: int) -> str:
     num = float(num)
     for unit in ("B", "KB", "MB", "GB"):
         if num < 1024:
