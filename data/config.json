@@ -7,7 +7,7 @@
     "username": "Masya_Boy",
     "server_name": "123",
     "auto_check_updates": true,
-    "java_path": "",
+    "java_path": "E:\\UTILS\\JAVA\\21\\bin\\java.EXE",
     "reinstall_minecraft_on_update": false,
     "reinstall_neoforge_on_update": false
 }
