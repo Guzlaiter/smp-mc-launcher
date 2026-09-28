@@ -5,11 +5,12 @@ from app.config import load_config
 from app.utils import log
 from ui.main_window import MainWindow
 from ui.widgets import CustomWindow
-
+from app.startup_checks import startup_checks
 
 class LauncherApp(CustomWindow):
     def __init__(self):
         super().__init__(title="Create SMP — Launcher")
+        startup_checks(self)
         MainWindow(self, load_config())
 
 
